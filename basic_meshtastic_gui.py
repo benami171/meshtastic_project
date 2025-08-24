@@ -102,7 +102,7 @@ class BasicMeshtasticGUI:
         node_frame.pack(pady=2, fill=tk.X)
         
         ttk.Label(node_frame, text="Nodes:").pack(side=tk.LEFT)
-        self.node_count_var = tk.StringVar(value="6")
+        self.node_count_var = tk.StringVar(value="10")
         self.node_count_spinbox = tk.Spinbox(node_frame, from_=1, to=100, width=5, 
                                            textvariable=self.node_count_var)
         self.node_count_spinbox.pack(side=tk.LEFT, padx=(5, 0))
