@@ -11,6 +11,9 @@ import networkx as nx
 import random
 import math
 import time
+import threading
+from queue import Queue
+from collections import deque
 
 class MeshtasticNode:
     def __init__(self, node_id, x, y, name=None):
@@ -32,17 +35,29 @@ class MeshtasticMessage:
         self.path = [from_node]  # Track which nodes it's been through
         self.delivered = False
         self.timestamp = time.time()
+        self.created_at_sim_time = 0  # Simulation time when message was created
+        self.transmission_delay = 0.1  # Time to transmit between nodes (seconds)
+        self.current_hop_start_time = 0  # When current hop started
+        self.status = "pending"  # pending, transmitting, delivered, failed
 
 class BasicMeshtasticGUI:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Basic Meshtastic Network Simulator")
+        self.root.title("Time-Discrete Meshtastic Network Simulator")
         self.root.geometry("1200x800")
         
         # Network data
         self.nodes = {}
         self.messages = []
         self.message_counter = 0
+        
+        # Time-discrete simulation
+        self.simulation_time = 0.0  # Current simulation time in seconds
+        self.time_step = 0.1  # Time step in seconds (100ms)
+        self.is_running = False
+        self.sim_thread = None
+        self.message_queue = deque()  # Queue for messages being processed
+        self.transmission_events = []  # List of (time, event_type, data) tuples
         
         # Dynamic range based on network size (will be set when network is created)
         self.max_range = 150
@@ -90,6 +105,26 @@ class BasicMeshtasticGUI:
         
         # Network actions
         ttk.Label(control_frame, text="⚙️ Network Actions", font=("Arial", 12, "bold")).pack(anchor=tk.W, pady=(10, 5))
+        
+        # Simulation controls
+        sim_control_frame = ttk.Frame(control_frame)
+        sim_control_frame.pack(pady=2, fill=tk.X)
+        
+        self.start_stop_btn = ttk.Button(sim_control_frame, text="▶️ Start Simulation", 
+                                        command=self.toggle_simulation)
+        self.start_stop_btn.pack(side=tk.LEFT, padx=(0, 5))
+        
+        ttk.Button(sim_control_frame, text="⏸️ Reset", 
+                  command=self.reset_simulation).pack(side=tk.LEFT)
+        
+        # Simulation time display
+        time_frame = ttk.Frame(control_frame)
+        time_frame.pack(pady=2, fill=tk.X)
+        
+        ttk.Label(time_frame, text="Sim Time:").pack(side=tk.LEFT)
+        self.sim_time_var = tk.StringVar(value="0.0s")
+        ttk.Label(time_frame, textvariable=self.sim_time_var, 
+                 font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=(5, 0))
         
         ttk.Button(control_frame, text="🔄 Refresh Network", 
                   command=self.update_display).pack(pady=2, fill=tk.X)
@@ -237,16 +272,14 @@ class BasicMeshtasticGUI:
                 
             # Create message
             msg = MeshtasticMessage(self.message_counter, from_id, to_id, message_text)
+            msg.created_at_sim_time = self.simulation_time
             self.message_counter += 1
             self.messages.append(msg)
             
-            # Try to route the message
-            success = self.route_message(msg)
+            # Add to message queue for time-discrete processing
+            self.message_queue.append(msg)
             
-            if success:
-                self.log_message(f"✅ Message sent: '{message_text}' from {self.nodes[from_id].name} to {self.nodes[to_id].name}")
-            else:
-                self.log_message(f"❌ Message failed: No route to {self.nodes[to_id].name}")
+            self.log_message(f"📤 Message queued: '{message_text}' from {self.nodes[from_id].name} to {self.nodes[to_id].name}")
                 
             # Clear form
             self.message_entry.delete(0, tk.END)
@@ -254,6 +287,171 @@ class BasicMeshtasticGUI:
             
         except Exception as e:
             messagebox.showerror("Error", f"Failed to send message: {str(e)}")
+    
+    def toggle_simulation(self):
+        """Start or stop the time-discrete simulation"""
+        if not self.is_running:
+            self.start_simulation()
+        else:
+            self.stop_simulation()
+    
+    def start_simulation(self):
+        """Start the time-discrete simulation"""
+        self.is_running = True
+        self.start_stop_btn.config(text="⏸️ Stop Simulation")
+        self.sim_thread = threading.Thread(target=self.simulation_loop, daemon=True)
+        self.sim_thread.start()
+        self.log_message("🚀 Time-discrete simulation started")
+    
+    def stop_simulation(self):
+        """Stop the time-discrete simulation"""
+        self.is_running = False
+        self.start_stop_btn.config(text="▶️ Start Simulation")
+        self.log_message("⏹️ Simulation stopped")
+    
+    def reset_simulation(self):
+        """Reset the simulation time and clear all messages"""
+        self.stop_simulation()
+        self.simulation_time = 0.0
+        self.messages.clear()
+        self.message_queue.clear()
+        self.transmission_events.clear()
+        self.message_counter = 0
+        self.sim_time_var.set("0.0s")
+        self.update_display()
+        self.log_message("🔄 Simulation reset")
+    
+    def simulation_loop(self):
+        """Main time-discrete simulation loop"""
+        while self.is_running:
+            # Advance simulation time
+            self.simulation_time += self.time_step
+            
+            # Update time display (thread-safe)
+            self.root.after(0, lambda: self.sim_time_var.set(f"{self.simulation_time:.1f}s"))
+            
+            # Process messages in queue
+            self.process_message_queue()
+            
+            # Process transmission events
+            self.process_transmission_events()
+            
+            # Update display periodically (every 0.5 seconds)
+            if int(self.simulation_time * 10) % 5 == 0:
+                self.root.after(0, self.update_display)
+            
+            # Sleep for real-time step (simulation runs at 10x speed)
+            time.sleep(self.time_step / 10)
+    
+    def process_message_queue(self):
+        """Process messages waiting to be transmitted"""
+        messages_to_remove = []
+        
+        for msg in list(self.message_queue):
+            if msg.status == "pending":
+                # Start routing the message
+                if self.start_message_routing(msg):
+                    msg.status = "transmitting"
+                    msg.current_hop_start_time = self.simulation_time
+                else:
+                    msg.status = "failed"
+                    msg.delivered = False
+                    messages_to_remove.append(msg)
+                    self.root.after(0, lambda m=msg: self.log_message(f"❌ Message failed: No route to {self.nodes[m.to_node].name}"))
+        
+        # Remove failed messages from queue
+        for msg in messages_to_remove:
+            if msg in self.message_queue:
+                self.message_queue.remove(msg)
+    
+    def process_transmission_events(self):
+        """Process scheduled transmission events"""
+        current_events = [event for event in self.transmission_events 
+                         if event[0] <= self.simulation_time]
+        
+        for event_time, event_type, data in current_events:
+            if event_type == "hop_complete":
+                msg, next_node = data
+                self.complete_message_hop(msg, next_node)
+            
+            # Remove processed event
+            self.transmission_events.remove((event_time, event_type, data))
+    
+    def start_message_routing(self, message):
+        """Start routing a message through the network"""
+        # Find path using BFS
+        path = self.find_message_path(message)
+        if path and len(path) > 1:
+            message.path = path
+            # Schedule first hop
+            next_node = path[1]  # Next node after source
+            hop_complete_time = self.simulation_time + message.transmission_delay
+            self.transmission_events.append((hop_complete_time, "hop_complete", (message, next_node)))
+            return True
+        return False
+    
+    def complete_message_hop(self, message, next_node):
+        """Complete a hop in message transmission"""
+        current_node_idx = len([n for n in message.path if n in message.path[:message.path.index(next_node) + 1]]) - 1
+        
+        if next_node == message.to_node:
+            # Message reached destination
+            message.delivered = True
+            message.status = "delivered"
+            if message in self.message_queue:
+                self.message_queue.remove(message)
+            
+            delivery_time = self.simulation_time - message.created_at_sim_time
+            self.root.after(0, lambda: self.log_message(
+                f"✅ Message delivered: '{message.text}' to {self.nodes[message.to_node].name} "
+                f"(took {delivery_time:.1f}s, {len(message.path)-1} hops)"
+            ))
+        else:
+            # Continue to next hop
+            try:
+                current_idx = message.path.index(next_node)
+                if current_idx + 1 < len(message.path):
+                    next_hop = message.path[current_idx + 1]
+                    hop_complete_time = self.simulation_time + message.transmission_delay
+                    self.transmission_events.append((hop_complete_time, "hop_complete", (message, next_hop)))
+            except (ValueError, IndexError):
+                # Path error, mark as failed
+                message.status = "failed"
+                message.delivered = False
+                if message in self.message_queue:
+                    self.message_queue.remove(message)
+    
+    def find_message_path(self, message):
+        """Find path for message using BFS (same as before but extracted)"""
+        visited = set([message.from_node])
+        queue = [message.from_node]
+        parent = {message.from_node: None}
+        
+        # BFS to find path
+        hops_left = message.hops_left
+        while queue and hops_left > 0:
+            current = queue.pop(0)
+            
+            # Check all neighbors
+            for node_id in self.nodes:
+                if node_id not in visited and self.can_communicate(current, node_id):
+                    visited.add(node_id)
+                    parent[node_id] = current
+                    queue.append(node_id)
+                    
+                    # Found destination
+                    if node_id == message.to_node:
+                        # Reconstruct path
+                        path = []
+                        node = node_id
+                        while node is not None:
+                            path.append(node)
+                            node = parent[node]
+                        return list(reversed(path))
+                        
+            hops_left -= 1
+            
+        return None
             
     def route_message(self, message):
         """Route message through the mesh network using simple flooding"""
@@ -310,17 +508,30 @@ class BasicMeshtasticGUI:
         
         # Draw message paths
         for msg in self.messages:
-            if msg.delivered and len(msg.path) > 1:
+            if msg.status == "delivered" and len(msg.path) > 1:
+                # Delivered messages - solid red lines
                 path_x = [self.nodes[node_id].x for node_id in msg.path]
                 path_y = [self.nodes[node_id].y for node_id in msg.path]
-                self.ax.plot(path_x, path_y, 'r-', linewidth=3, alpha=0.7)
+                self.ax.plot(path_x, path_y, 'r-', linewidth=2, alpha=0.7, label='Delivered')
                 
-                # Add arrows
+            elif msg.status == "transmitting" and len(msg.path) > 1:
+                # Transmitting messages - animated dashed lines
+                path_x = [self.nodes[node_id].x for node_id in msg.path]
+                path_y = [self.nodes[node_id].y for node_id in msg.path]
+                self.ax.plot(path_x, path_y, 'orange', linewidth=3, alpha=0.8, 
+                           linestyle='--', label='Transmitting')
+                
+                # Add arrows for message direction
                 for i in range(len(msg.path) - 1):
                     x1, y1 = self.nodes[msg.path[i]].x, self.nodes[msg.path[i]].y
                     x2, y2 = self.nodes[msg.path[i+1]].x, self.nodes[msg.path[i+1]].y
                     self.ax.annotate('', xy=(x2, y2), xytext=(x1, y1),
-                                   arrowprops=dict(arrowstyle='->', color='red', lw=2))
+                                   arrowprops=dict(arrowstyle='->', color='orange', lw=2))
+            
+            elif msg.status == "failed":
+                # Failed messages - red X at source
+                source_node = self.nodes[msg.from_node]
+                self.ax.plot(source_node.x, source_node.y, 'rx', markersize=10, markeredgewidth=3)
         
         # Draw nodes
         for node in self.nodes.values():
@@ -350,7 +561,7 @@ class BasicMeshtasticGUI:
         else:
             self.ax.set_xlim(0, 450)
             self.ax.set_ylim(0, 400)
-        self.ax.set_title("Meshtastic Network - Green connections show direct communication range")
+        self.ax.set_title(f"Time-Discrete Meshtastic Network (t={self.simulation_time:.1f}s)")
         self.ax.grid(True, alpha=0.3)
         self.canvas.draw()
         
@@ -365,16 +576,28 @@ class BasicMeshtasticGUI:
         total_connections = sum(1 for n1 in self.nodes for n2 in self.nodes 
                               if n1 < n2 and self.can_communicate(n1, n2))
         
+        # Count messages by status
+        pending_msgs = sum(1 for m in self.messages if m.status == "pending")
+        transmitting_msgs = sum(1 for m in self.messages if m.status == "transmitting")
+        delivered_msgs = sum(1 for m in self.messages if m.status == "delivered")
+        failed_msgs = sum(1 for m in self.messages if m.status == "failed")
+        
         status = f"""📊 NETWORK STATUS
         
+Simulation: {"🟢 RUNNING" if self.is_running else "🔴 STOPPED"}
+Sim Time: {self.simulation_time:.1f}s
+Time Step: {self.time_step}s
+
 Nodes Online: {online_nodes}/{len(self.nodes)}
 Direct Links: {total_connections}
 Max Range: {self.max_range}m
 
 💬 MESSAGES
-Total Sent: {len(self.messages)}
-Delivered: {sum(1 for m in self.messages if m.delivered)}
-Failed: {sum(1 for m in self.messages if not m.delivered)}
+Pending: {pending_msgs}
+Transmitting: {transmitting_msgs}
+Delivered: {delivered_msgs}
+Failed: {failed_msgs}
+Queue Size: {len(self.message_queue)}
 
 🔋 NODE STATUS
 """
@@ -393,8 +616,24 @@ Failed: {sum(1 for m in self.messages if not m.delivered)}
         
     def show_statistics(self):
         """Show detailed network statistics"""
+        delivered_msgs = [m for m in self.messages if m.status == "delivered"]
+        failed_msgs = [m for m in self.messages if m.status == "failed"]
+        pending_msgs = [m for m in self.messages if m.status == "pending"]
+        transmitting_msgs = [m for m in self.messages if m.status == "transmitting"]
+        
+        avg_delivery_time = 0
+        if delivered_msgs:
+            delivery_times = [self.simulation_time - m.created_at_sim_time for m in delivered_msgs if m.created_at_sim_time > 0]
+            avg_delivery_time = sum(delivery_times) / len(delivery_times) if delivery_times else 0
+        
         stats = f"""
-📊 MESHTASTIC NETWORK STATISTICS
+📊 TIME-DISCRETE MESHTASTIC SIMULATION STATISTICS
+
+⏱️ Simulation Status:
+• Current Time: {self.simulation_time:.1f} seconds
+• Time Step: {self.time_step} seconds
+• Status: {"Running" if self.is_running else "Stopped"}
+• Messages in Queue: {len(self.message_queue)}
 
 🌐 Network Overview:
 • Total Nodes: {len(self.nodes)}
@@ -404,19 +643,22 @@ Failed: {sum(1 for m in self.messages if not m.delivered)}
 
 💬 Message Statistics:
 • Total Messages: {len(self.messages)}
-• Successfully Delivered: {sum(1 for m in self.messages if m.delivered)}
-• Failed Deliveries: {sum(1 for m in self.messages if not m.delivered)}
+• Pending: {len(pending_msgs)}
+• Transmitting: {len(transmitting_msgs)}
+• Successfully Delivered: {len(delivered_msgs)}
+• Failed Deliveries: {len(failed_msgs)}
 • Average Hops per Message: {self.calculate_avg_hops():.1f}
+• Average Delivery Time: {avg_delivery_time:.2f}s
 
-🔗 Key Meshtastic Features Demonstrated:
-• Mesh networking (nodes relay messages)
-• Automatic routing (finds best path)
-• Range limitations (realistic RF constraints)
-• Multi-hop communication (extends network reach)
-• Decentralized operation (no central server)
+🔗 Key Time-Discrete Features:
+• Simulation advances in {self.time_step}s steps
+• Message transmission takes {0.1}s per hop
+• Real-time visualization of message flow
+• Queued message processing
+• Transmission delay modeling
 """
         
-        messagebox.showinfo("Network Statistics", stats)
+        messagebox.showinfo("Simulation Statistics", stats)
         
     def calculate_connectivity(self):
         """Calculate network connectivity percentage"""
@@ -429,14 +671,21 @@ Failed: {sum(1 for m in self.messages if not m.delivered)}
         
     def calculate_avg_hops(self):
         """Calculate average hops per delivered message"""
-        delivered_msgs = [m for m in self.messages if m.delivered]
+        delivered_msgs = [m for m in self.messages if m.status == "delivered"]
         if not delivered_msgs:
             return 0
         return sum(len(m.path) - 1 for m in delivered_msgs) / len(delivered_msgs)
         
     def run(self):
         """Start the GUI"""
+        # Ensure simulation stops when window closes
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.root.mainloop()
+    
+    def on_closing(self):
+        """Handle window close event"""
+        self.stop_simulation()
+        self.root.destroy()
 
 def main():
     """Main entry point"""
