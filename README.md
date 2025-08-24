@@ -2,6 +2,10 @@
 
 A simple and educational Meshtastic mesh network simulator that demonstrates core concepts of decentralized radio communication networks.
 
+<img width="1200" height="830" alt="Image" src="https://github.com/user-attachments/assets/07c2753d-8313-48a0-b640-6bcd086adb35" />
+
+<img width="1200" height="830" alt="Image" src="https://github.com/user-attachments/assets/65f5d591-e263-461e-bae3-79c4b890016a" />
+
 ## Purpose
 
 This simulator showcases the fundamental principles of Meshtastic networks:
