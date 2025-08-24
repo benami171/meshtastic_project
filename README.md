@@ -2,8 +2,21 @@
 
 A comprehensive time-discrete Meshtastic mesh network simulator that demonstrates core concepts of decentralized radio communication networks with realistic timing and message propagation.
 
-<img width="1346" height="941" alt="Image" src="https://github.com/user-attachments/assets/8ea075a1-a4fb-4e09-b8d2-ee3f18933a1d" />
+setting up messages:
+<img width="1916" height="1029" alt="Image" src="https://github.com/user-attachments/assets/4dc0f152-1e58-453a-9770-afb567152a72" />
 
+---
+
+running the simulation:
+<img width="1918" height="1026" alt="image" src="https://github.com/user-attachments/assets/39a8d493-87ca-4216-8228-e920fd1cefbf" />
+
+---
+
+watching the statistics:
+
+<img width="361" height="509" alt="image" src="https://github.com/user-attachments/assets/e6a16718-eaa0-4229-bda5-5e0fa9f73a96" />
+
+---
 
 ## Purpose
 
